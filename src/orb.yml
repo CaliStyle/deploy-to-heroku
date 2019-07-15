@@ -1,0 +1,122 @@
+# This code is licensed from CircleCI to the user under the MIT license. See
+# https://circleci.com/orbs/registry/licensing for details.
+version: 2.1
+description: "Deploying Node.js Docker to Heroku"
+
+executors:
+  node:
+    docker:
+      - image: circleci/node:12
+
+commands:
+  setup:
+    steps:
+      - checkout
+      - setup_remote_docker
+  install_dependencies:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "package.json" }}
+            - v1-dependencies- # fallback to using the latest cache if no exact match is found
+      - run:
+          name: "Install Heroku CLI, if necessary"
+          command: |
+            if [[ $(command -v heroku) == "" ]]; then
+              curl https://cli-assets.heroku.com/install.sh | sh
+            else
+              echo "Heroku is already installed. No operation was performed."
+            fi
+  create_build_metadata:
+    parameters:
+      app-name:
+        description: "The Heroku app against to which the deployment is being made"
+        type: string
+    steps:
+      - run:
+          name: Compute git-describe version
+          command: |
+            GIT_DESCRIBE_VERSION=$(git describe --always)
+            echo "Computed application version: ${GIT_DESCRIBE_VERSION}"
+            mkdir -p build/metadata
+            echo ${GIT_DESCRIBE_VERSION} > build/metadata/version
+      - run:
+          name: Computing service name
+          command: |
+            echo "Computed application service name: << parameters.app-name >>"
+            mkdir -p build/metadata
+            echo << parameters.app-name >> > build/metadata/name
+  verify_deployment_configuration:
+    parameters:
+      app-name:
+        description: "The Heroku app against which to verify the configuration"
+        type: string
+    steps:
+      - run:
+          name: Verify Heroku environment variables
+          command: |
+            /betterdoc/scripts/verify_heroku_environment_variables_against_servicefile.rb \
+              -servicefile Servicefile \
+              -heroku-app << parameters.app-name >> \
+              -heroku-api-key $HEROKU_API_KEY
+
+jobs:
+  docker-build-release:
+    executor: node
+    parameters:
+      app-name:
+        description: "The Heroku app name to which the application should be deployed"
+        type: string
+      app-type:
+        description: "The Heroku app type (web or worker) of the application to be deployed"
+        type: string
+        default: "web"
+    steps:
+      - setup
+      - install_dependencies
+      - create_build_metadata:
+          app-name: << parameters.app-name >>
+      - verify_deployment_configuration:
+          app-name: << parameters.app-name >>
+      - run:
+          name: Login into Heroku Docker Repository
+          command: |
+            docker login --username=$HEROKU_LOGIN --password=$HEROKU_API_KEY registry.heroku.com
+      - run:
+          name: Deploy Heroku Docker Container
+          command: |
+            heroku container:push << parameters.app-type >> -a << parameters.app-name >>
+            heroku container:release << parameters.app-type >> -a << parameters.app-name >>
+
+  docker-build-release-with-database-update:
+    executor: node
+    parameters:
+      app-name:
+        description: "The Heroku app name to which the application should be deployed"
+        type: string
+      app-type:
+        description: "The Heroku app type (web or worker) of the application to be deployed"
+        type: string
+        default: "web"
+      database-url:
+        description: "The URL of the database that should be migrated as part of the deployment"
+        type: string
+    steps:
+      - setup
+      - install_dependencies
+      - create_build_metadata:
+          app-name: << parameters.app-name >>
+      - verify_deployment_configuration:
+          app-name: << parameters.app-name >>
+      - run:
+          name: Login into Heroku Docker Repository
+          command: |
+            docker login --username=$HEROKU_LOGIN --password=$HEROKU_API_KEY registry.heroku.com
+      - run:
+          name: Deploy Heroku Docker Container
+          command: |
+            heroku container:push << parameters.app-type >> -a << parameters.app-name >>
+      - run:
+          name: Release Heroku Docker Container
+          command: |
+            heroku container:release << parameters.app-type >> -a << parameters.app-name >>
